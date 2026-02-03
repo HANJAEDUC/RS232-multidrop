@@ -1,0 +1,8 @@
+# MPLAB X artifacts
+build/
+debug/
+dist/
+nbproject/private/
+*.bak
+*.tmp
+.generated_files/
