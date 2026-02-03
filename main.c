@@ -161,11 +161,12 @@ void main(void) {
   // Initial State for MAX3323
   MAX3323_SHDN_LAT = 1;  // High = Operation
   MAX3323_RX_EN_LAT = 1; // High = Receive Enable
-  MAX3323_TX_EN_LAT = 0; // Low = Idle (Disabled)
+  // DEBUG: Enable TX ALWAYS to rule out timing issues
+  MAX3323_TX_EN_LAT = 1; // High = Sending (Always ON)
 
-  // LED Test
+  // LED Test (Both ON)
   LED_IND0_LAT = 1;
-  LED_IND1_LAT = 0;
+  LED_IND1_LAT = 1;
 
   // Packet Parsing State for UART2 (Bus)
   typedef enum {
@@ -181,96 +182,67 @@ void main(void) {
 
   while (1) {
     // --- 1. UART2 Processing (Bus -> Scaler) ---
-    // Now reads from Ring Buffer, not register directly
+    // [ID] [POWERX] Test Logic
+    static uint8_t keyword_idx = 0;
+    const char *keyword = "POWERX";
+    static bool id_matched = false;
+
     if (UART2_is_rx_ready()) {
       uint8_t rx_byte = UART2_Read();
 
-      switch (rx_state) {
-      case STATE_WAIT_START_ID:
+      if (!id_matched) {
+        // Step 1: Wait for ID Match
         if (rx_byte == MY_DEVICE_ID) {
-          payload_index = 0;
-          rx_state = STATE_RECEIVE_PAYLOAD;
+          id_matched = true;
+          keyword_idx = 0; // Reset keyword check
         }
-        break;
+      } else {
+        // Step 2: Check for "POWERX"
+        if (rx_byte == keyword[keyword_idx]) {
+          keyword_idx++;
 
-      case STATE_RECEIVE_PAYLOAD:
-        if (payload_index < PAYLOAD_BUF_SIZE) {
-          payload_buffer[payload_index++] = rx_byte;
-        } else {
-          rx_state = STATE_WAIT_START_ID; // Overflow reset
-        }
+          if (keyword[keyword_idx] == '\0') {
+            // "POWERX" Match Found!
+            id_matched = false; // Reset for next packet
 
-        if (rx_byte == 'X') {
-          rx_state = STATE_WAIT_END_ID;
-        }
-        break;
+            // Action 1: Blink LEDs 3 times
+            for (int i = 0; i < 3; i++) {
+              LED_IND0_LAT = 0;
+              LED_IND1_LAT = 0;
+              __delay_ms(200);
+              LED_IND0_LAT = 1;
+              LED_IND1_LAT = 1;
+              __delay_ms(200);
+            }
 
-      case STATE_WAIT_END_ID:
-        if (rx_byte == MY_DEVICE_ID) {
-          // Valid Packet Found!
-          // Forward Payload to UART1 Immediately
-          // Forward Payload to UART1 Immediately
-          LED_IND0_LAT = 1; // Turn ON indicating data transmission
-          for (uint8_t i = 0; i < payload_index; i++) {
-            UART1_Write(payload_buffer[i]);
+            // Action 2: Send "POWERX" back to TX2
+            // TX Driver is already ON (Debug)
+            
+            const char *msg = "POWERX";
+            while (*msg) {
+               UART2_Write(*msg++);
+            }
+
+            // Wait for transmission to finish
+            while (!TX2STAbits.TRMT);
           }
-          LED_IND0_LAT = 0; // Turn OFF after transmission
+        } else {
+          // Mismatch in keyword -> Reset
+          id_matched = false;
+          keyword_idx = 0;
+          // Check if this byte was actually the ID (restart immediately)
+          if (rx_byte == MY_DEVICE_ID) {
+              id_matched = true;
+          }
         }
-        rx_state = STATE_WAIT_START_ID;
-        break;
       }
     }
 
-    // --- 2. UART1 Processing (Scaler -> Bus) ---
-    // Reads from Ring Buffer
+    // --- 2. UART1 Processing (To be ignored for this test or keep as is) ---
+    // Keeping simple pass-through just in case, or can be removed.
+    // For this specific test request, we focus on UART2 loop.
     if (UART1_is_rx_ready()) {
-      // Found data from Scaler. Start Blind Transmission.
-
-      // 1. Enable Bus Driver
-      MAX3323_TX_EN_LAT = 1; // High = Sending
-      LED_IND1_LAT = 1;      // Turn ON indicating data transmission
-
-      // 2. Loop until 'X' is processed
-      // Note: Even while we are stuck in this loop sending data,
-      // the Interrupts (ISR) are still running in background,
-      // capturing any incoming UART2 data into uart2_rx_buf.
-      // So we don't lose incoming data! Conflict Solved.
-
-      while (1) {
-        // Wait for data in RING BUFFER (not hardware register) with Timeout
-        // Baud rate ~9600bps -> ~1ms per byte.
-        // Wait max ~50ms before giving up to prevent hanging.
-        uint16_t timeout_counter = 0;
-        bool timeout_occurred = false;
-
-        while (!UART1_is_rx_ready()) {
-          __delay_us(100);
-          timeout_counter++;
-          if (timeout_counter > 500) { // 100us * 500 = 50ms
-            timeout_occurred = true;
-            break;
-          }
-        }
-
-        if (timeout_occurred) {
-          break; // Exit relay loop on timeout
-        }
-
-        uint8_t tx_byte = UART1_Read();
-        UART2_Write(tx_byte);
-
-        // Removed 'X' check.
-        // We now rely solely on the timeout (silence) to close the bus.
-        // This allows transparent data of any format.
-      }
-
-      // 3. Wait for hardware finish
-      while (!TX2STAbits.TRMT)
-        ;
-
-      // 4. Disable Bus Driver
-      MAX3323_TX_EN_LAT = 0; // Low = Idle
-      LED_IND1_LAT = 0;      // Turn OFF after transmission
+        UART1_Read(); // Just clear buffer to prevent overflow
     }
   }
 }
