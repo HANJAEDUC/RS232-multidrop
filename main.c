@@ -94,6 +94,7 @@ void PMD_Initialize(void);
 void PIN_MANAGER_Initialize(void);
 void UART1_Initialize(void);
 void UART2_Initialize(void);
+void TMR0_Initialize(void);
 uint8_t UART1_Read(void);
 void UART1_Write(uint8_t data);
 uint8_t UART2_Read(void);
@@ -136,6 +137,15 @@ void __interrupt() INTERRUPT_InterruptManager(void) {
     if (next_head != uart2_rx_tail) {
       uart2_rx_buf[uart2_rx_head] = data;
       uart2_rx_head = next_head;
+    }
+  }
+
+  // Timer0 Interrupt (Heartbeat)
+  if (PIR0bits.TMR0IF == 1 && PIE0bits.TMR0IE == 1) {
+    PIR0bits.TMR0IF = 0;
+    if (is_heartbeat_enabled) {
+      LED_IND0_LAT = !LED_IND0_LAT;
+      LED_IND1_LAT = !LED_IND1_LAT;
     }
   }
 }
@@ -205,6 +215,9 @@ void main(void) {
             // "POWERX" Match Found!
             id_matched = false; // Reset for next packet
 
+            // Disable Heartbeat
+            is_heartbeat_enabled = false;
+
             // Action 1: Blink LEDs 3 times
             for (int i = 0; i < 3; i++) {
               LED_IND0_LAT = 0;
@@ -214,6 +227,9 @@ void main(void) {
               LED_IND1_LAT = 1;
               __delay_ms(200);
             }
+            
+            // Re-enable Heartbeat
+            is_heartbeat_enabled = true;
 
             // Action 2: Send "POWERX" back to TX2
             // TX Driver is already ON (Debug)
@@ -253,6 +269,7 @@ void SYSTEM_Initialize(void) {
   PIN_MANAGER_Initialize();
   UART1_Initialize();
   UART2_Initialize();
+  TMR0_Initialize();
 }
 
 void OSCILLATOR_Initialize(void) {
@@ -363,3 +380,25 @@ uint8_t Read_Device_ID(void) {
     id |= 0x08;
   return id;
 }
+
+// --- Timer0 for Heartbeat ---
+volatile bool is_heartbeat_enabled = true;
+
+void TMR0_Initialize(void) {
+  // Fosc/4 = 16MHz
+  // Prescaler 1:256 -> 62.5kHz (16us per tick)
+  // Overflow at 65536 * 16us = ~1.048s
+  
+  // T0CON1: CS=Fosc/4 (010), Async=0, CKPS=1:256 (1000)
+  T0CON1 = 0x48;
+  
+  // T0CON0: EN=1, 16bit=1, OUTPS=1:1 (0000)
+  T0CON0 = 0x90;
+
+  // Clear Interrupt Flag
+  PIR0bits.TMR0IF = 0;
+
+  // Enable Interrupt
+  PIE0bits.TMR0IE = 1;
+}
+
